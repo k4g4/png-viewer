@@ -1,27 +1,36 @@
+#![windows_subsystem = "windows"]
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use iced::{
-    executor, mouse,
+    alignment, executor, mouse, theme,
     widget::{
         self,
         canvas::{self, Cache, Frame, Geometry, Program},
         column, row, Canvas,
     },
-    window, Application, Command, Element, Length, Rectangle, Renderer, Settings, Theme,
+    window, Application, Command, Element, Length, Rectangle, Renderer, Settings, Theme, Vector,
 };
-use tracing::{info, level_filters::LevelFilter};
+use rand::thread_rng;
+use tracing::{debug, info};
 
-const PHOTO_ICON: &[u8] = include_bytes!("../assets/photo.png");
+const PHOTO_ICON: &[u8] = include_bytes!("../assets/photo.ico");
+const SIZE: (u32, u32) = (700, 700);
+const MIN_SIZE: (u32, u32) = (200, 400);
+const EMOJIS: &str = "🌄🌅🌇🌠🌉🏕️";
 
 fn main() -> iced::Result {
     tracing_subscriber::fmt::fmt()
-        .with_max_level(LevelFilter::INFO)
+        .with_env_filter("png_viewer")
         .init();
+
     App::run(Settings {
         window: window::Settings {
+            size: SIZE,
+            position: window::Position::Centered,
+            min_size: Some(MIN_SIZE),
             icon: Some(window::icon::from_file_data(PHOTO_ICON, None).unwrap()),
             ..window::Settings::default()
         },
@@ -67,6 +76,7 @@ impl Application for App {
                     }
                     Ok(None) => {}
                     Err(err) => {
+                        debug!("{err:?}");
                         let _ = native_dialog::MessageDialog::new()
                             .set_title("Error loading image")
                             .set_text(&format!("{err:?}"))
@@ -90,17 +100,33 @@ impl Application for App {
     }
 
     fn view(&self) -> Element<'_, Self::Message, Renderer<Self::Theme>> {
+        struct ButtonTheme;
+
+        impl widget::button::StyleSheet for ButtonTheme {
+            type Style = Theme;
+
+            fn active(&self, style: &Self::Style) -> widget::button::Appearance {
+                widget::button::Appearance {
+                    border_radius: 15.0.into(),
+                    ..style.active(&theme::Button::Primary)
+                }
+            }
+        }
+
         let bottom_bar = row![
             widget::horizontal_space(Length::Fill),
             widget::button("Load Image")
                 .on_press(Message::LoadImage)
-                .padding(5),
+                .style(theme::Button::custom(ButtonTheme))
+                .padding(10),
             widget::horizontal_space(Length::Fill)
         ]
         .padding(20);
 
         column![
-            Canvas::new(&self.viewer).height(Length::Fill),
+            Canvas::new(&self.viewer)
+                .height(Length::Fill)
+                .width(Length::Fill),
             widget::container("")
                 .style(|theme: &Theme| widget::container::Appearance {
                     border_width: 2.0,
@@ -108,7 +134,7 @@ impl Application for App {
                     ..Default::default()
                 })
                 .width(Length::Fill)
-                .max_height(1),
+                .max_height(2),
             bottom_bar,
         ]
         .into()
@@ -119,13 +145,9 @@ impl Application for App {
     }
 }
 
-#[derive(Default)]
 enum Viewer {
-    Png {
-        png_cache: Cache,
-    },
-    #[default]
-    None,
+    Png { png_cache: Cache },
+    None(char),
 }
 
 impl Viewer {
@@ -133,6 +155,15 @@ impl Viewer {
         *self = Self::Png {
             png_cache: Cache::new(),
         }
+    }
+}
+
+impl Default for Viewer {
+    fn default() -> Self {
+        use rand::seq::IteratorRandom;
+
+        let mut rng = thread_rng();
+        Self::None(EMOJIS.chars().choose(&mut rng).unwrap())
     }
 }
 
@@ -149,8 +180,16 @@ impl Program<Message> for Viewer {
     ) -> Vec<Geometry> {
         match self {
             Self::Png { png_cache } => vec![png_cache.draw(renderer, bounds.size(), |_frame| {})],
-            Self::None => {
-                let frame = Frame::new(renderer, bounds.size());
+            Self::None(emoji) => {
+                let mut frame = Frame::new(renderer, bounds.size());
+                frame.translate(Vector::new(bounds.width * 0.5, bounds.height * 0.2));
+                frame.fill_text(canvas::Text {
+                    content: emoji.to_string(),
+                    shaping: widget::text::Shaping::Advanced,
+                    size: 100.0 + bounds.height * 0.4,
+                    horizontal_alignment: alignment::Horizontal::Center,
+                    ..Default::default()
+                });
                 vec![frame.into_geometry()]
             }
         }
