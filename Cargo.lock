@@ -1061,6 +1061,7 @@ dependencies = [
  "futures",
  "iced_core",
  "log",
+ "tokio",
  "wasm-bindgen-futures",
  "wasm-timer",
 ]
@@ -2107,6 +2108,7 @@ dependencies = [
  "iced",
  "native-dialog",
  "rand",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "winres",
@@ -2714,6 +2716,17 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
+name = "tokio"
+version = "1.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0c014766411e834f7af5b8f4cf46257aab4036ca95e9d2c144a10f59ad6f5b9"
+dependencies = [
+ "backtrace",
+ "num_cpus",
+ "pin-project-lite",
+]
 
 [[package]]
 name = "toml"

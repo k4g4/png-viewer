@@ -1,8 +1,8 @@
-#![windows_subsystem = "windows"]
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+// uncomment for release: #![windows_subsystem = "windows"]
+
+mod load;
+
+use std::{io, sync::Arc};
 
 use iced::{
     alignment, executor, mouse, theme,
@@ -14,18 +14,18 @@ use iced::{
     window, Application, Command, Element, Length, Rectangle, Renderer, Settings, Theme, Vector,
 };
 use rand::thread_rng;
-use tracing::{debug, info};
+use tokio::sync::oneshot;
+use tracing::{debug, error};
 
 const PHOTO_ICON: &[u8] = include_bytes!("../assets/photo.ico");
 const SIZE: (u32, u32) = (700, 700);
 const MIN_SIZE: (u32, u32) = (200, 400);
-const EMOJIS: &str = "🌄🌅🌇🌠🌉🏕️";
+const EMOJIS: &[char] = &['🌄', '🌅', '🌇', '🌠', '🌉', '🏡', '🌺', '⛵', '🪐', '🌞'];
 
 fn main() -> iced::Result {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("png_viewer")
         .init();
-
     App::run(Settings {
         window: window::Settings {
             size: SIZE,
@@ -45,8 +45,8 @@ struct App {
 
 #[derive(Debug, Clone)]
 enum Message {
-    ImageLoaded(Arc<native_dialog::Result<Option<PathBuf>>>),
-    LoadImage,
+    Load,
+    Loaded(Arc<io::Result<()>>),
 }
 
 impl Application for App {
@@ -68,34 +68,11 @@ impl Application for App {
 
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
-            Message::ImageLoaded(result) => {
-                match result.as_ref() {
-                    Ok(Some(image_path)) => {
-                        info!("Loading: {}", image_path.display());
-                        self.viewer.load_png(image_path);
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        debug!("{err:?}");
-                        let _ = native_dialog::MessageDialog::new()
-                            .set_title("Error loading image")
-                            .set_text(&format!("{err:?}"))
-                            .show_alert();
-                    }
-                }
-
+            Message::Load => self.viewer.load(),
+            Message::Loaded(result) => {
+                self.viewer.loaded(result.as_ref());
                 Command::none()
             }
-            Message::LoadImage => Command::perform(
-                async {
-                    Arc::new(
-                        native_dialog::FileDialog::new()
-                            .set_title("Load Image")
-                            .show_open_single_file(),
-                    )
-                },
-                Message::ImageLoaded,
-            ),
         }
     }
 
@@ -113,12 +90,18 @@ impl Application for App {
             }
         }
 
+        let open_button = widget::button("Open PNG")
+            .style(theme::Button::custom(ButtonTheme))
+            .padding(10);
+        let open_button = if self.viewer.is_loading() {
+            open_button
+        } else {
+            open_button.on_press(Message::Load)
+        };
+
         let bottom_bar = row![
             widget::horizontal_space(Length::Fill),
-            widget::button("Load Image")
-                .on_press(Message::LoadImage)
-                .style(theme::Button::custom(ButtonTheme))
-                .padding(10),
+            open_button,
             widget::horizontal_space(Length::Fill)
         ]
         .padding(20);
@@ -146,24 +129,84 @@ impl Application for App {
 }
 
 enum Viewer {
-    Png { png_cache: Cache },
-    None(char),
+    Loading {
+        cache_recv: oneshot::Receiver<Cache>,
+    },
+    Loaded {
+        cache: Cache,
+    },
+    Unloaded {
+        emoji: char,
+    },
 }
 
 impl Viewer {
-    fn load_png(&mut self, _png_path: impl AsRef<Path>) {
-        *self = Self::Png {
-            png_cache: Cache::new(),
+    fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading { .. })
+    }
+
+    fn load(&mut self) -> Command<Message> {
+        if self.is_loading() {
+            error!("called Viewer::load while still loading");
+            Command::none()
+        } else {
+            match native_dialog::FileDialog::new()
+                .set_title("Open PNG")
+                .show_open_single_file()
+            {
+                Ok(Some(path)) => {
+                    debug!("Loading: {}", path.display());
+                    let (cache_send, cache_recv) = oneshot::channel();
+                    *self = Self::Loading { cache_recv };
+                    Command::perform(load::load(path, cache_send), |result| {
+                        Message::Loaded(Arc::new(result))
+                    })
+                }
+
+                Ok(None) => {
+                    debug!("No file selected");
+                    Command::none()
+                }
+
+                Err(error) => {
+                    error!("from native_dialog::FileDialog: {error:?}");
+                    Command::none()
+                }
+            }
+        }
+    }
+
+    fn loaded(&mut self, result: &io::Result<()>) {
+        match self {
+            Self::Loading { cache_recv } => {
+                if let Err(error) = result {
+                    error!("from load::load: {error:?}");
+                } else {
+                    match cache_recv.try_recv() {
+                        Ok(cache) => {
+                            *self = Self::Loaded { cache };
+                        }
+                        Err(error) => {
+                            error!("from cache_recv.try_recv(): {error:?}");
+                        }
+                    }
+                }
+            }
+
+            _ => {
+                error!("called Viewer::loaded on a non-Loading variant");
+            }
         }
     }
 }
 
 impl Default for Viewer {
     fn default() -> Self {
-        use rand::seq::IteratorRandom;
+        use rand::seq::SliceRandom;
 
-        let mut rng = thread_rng();
-        Self::None(EMOJIS.chars().choose(&mut rng).unwrap())
+        Self::Unloaded {
+            emoji: *EMOJIS.choose(&mut thread_rng()).unwrap(),
+        }
     }
 }
 
@@ -179,14 +222,17 @@ impl Program<Message> for Viewer {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         match self {
-            Self::Png { png_cache } => vec![png_cache.draw(renderer, bounds.size(), |_frame| {})],
-            Self::None(emoji) => {
+            Self::Loaded { cache } => vec![cache.draw(renderer, bounds.size(), |_| ())],
+
+            Self::Loading { .. } => vec![],
+
+            Self::Unloaded { emoji } => {
                 let mut frame = Frame::new(renderer, bounds.size());
-                frame.translate(Vector::new(bounds.width * 0.5, bounds.height * 0.2));
+                frame.translate(Vector::new(bounds.width * 0.5, bounds.height * 0.25));
                 frame.fill_text(canvas::Text {
                     content: emoji.to_string(),
                     shaping: widget::text::Shaping::Advanced,
-                    size: 100.0 + bounds.height * 0.4,
+                    size: 100.0 + bounds.height * 0.3,
                     horizontal_alignment: alignment::Horizontal::Center,
                     ..Default::default()
                 });
