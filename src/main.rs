@@ -1,8 +1,5 @@
 // uncomment for release: #![windows_subsystem = "windows"]
-
-mod load;
-
-use std::{io, sync::Arc};
+mod render;
 
 use iced::{
     alignment, executor, mouse, theme,
@@ -13,13 +10,12 @@ use iced::{
     },
     window, Application, Command, Element, Length, Rectangle, Renderer, Settings, Theme, Vector,
 };
-use rand::thread_rng;
 use tokio::sync::oneshot;
 use tracing::{debug, error};
 
-const PHOTO_ICON: &[u8] = include_bytes!("../assets/photo.ico");
 const SIZE: (u32, u32) = (700, 700);
 const MIN_SIZE: (u32, u32) = (200, 400);
+const PHOTO_ICON: &[u8] = include_bytes!("../assets/photo.ico");
 const EMOJIS: &[char] = &['🌄', '🌅', '🌇', '🌠', '🌉', '🏡', '🌺', '⛵', '🪐', '🌞'];
 
 fn main() -> iced::Result {
@@ -46,7 +42,7 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     Load,
-    Loaded(Arc<io::Result<()>>),
+    Loaded,
 }
 
 impl Application for App {
@@ -69,10 +65,7 @@ impl Application for App {
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
             Message::Load => self.viewer.load(),
-            Message::Loaded(result) => {
-                self.viewer.loaded(result.as_ref());
-                Command::none()
-            }
+            Message::Loaded => self.viewer.loaded(),
         }
     }
 
@@ -92,12 +85,8 @@ impl Application for App {
 
         let open_button = widget::button("Open PNG")
             .style(theme::Button::custom(ButtonTheme))
-            .padding(10);
-        let open_button = if self.viewer.is_loading() {
-            open_button
-        } else {
-            open_button.on_press(Message::Load)
-        };
+            .padding(10)
+            .on_press(Message::Load);
 
         let bottom_bar = row![
             widget::horizontal_space(Length::Fill),
@@ -129,74 +118,67 @@ impl Application for App {
 }
 
 enum Viewer {
-    Loading {
-        cache_recv: oneshot::Receiver<Cache>,
-    },
-    Loaded {
+    Viewing {
+        data: Vec<u8>,
         cache: Cache,
     },
-    Unloaded {
+    Loading {
+        load_recv: oneshot::Receiver<std::io::Result<Vec<u8>>>,
+    },
+    Empty {
         emoji: char,
     },
 }
 
 impl Viewer {
-    fn is_loading(&self) -> bool {
-        matches!(self, Self::Loading { .. })
-    }
-
     fn load(&mut self) -> Command<Message> {
-        if self.is_loading() {
-            error!("called Viewer::load while still loading");
-            Command::none()
-        } else {
-            match native_dialog::FileDialog::new()
-                .set_title("Open PNG")
-                .show_open_single_file()
-            {
-                Ok(Some(path)) => {
-                    debug!("Loading: {}", path.display());
-                    let (cache_send, cache_recv) = oneshot::channel();
-                    *self = Self::Loading { cache_recv };
-                    Command::perform(load::load(path, cache_send), |result| {
-                        Message::Loaded(Arc::new(result))
-                    })
-                }
+        match native_dialog::FileDialog::new()
+            .set_title("Open PNG")
+            .show_open_single_file()
+        {
+            Ok(Some(path)) => {
+                debug!("Loading: {}", path.display());
+                let (load_send, load_recv) = oneshot::channel();
+                *self = Self::Loading { load_recv };
+                Command::perform(tokio::fs::read(path), |result| {
+                    let _ = load_send.send(result);
+                    Message::Loaded
+                })
+            }
 
-                Ok(None) => {
-                    debug!("No file selected");
-                    Command::none()
-                }
+            Ok(None) => {
+                debug!("No file selected");
+                Command::none()
+            }
 
-                Err(error) => {
-                    error!("from native_dialog::FileDialog: {error:?}");
-                    Command::none()
-                }
+            Err(error) => {
+                error!("from native_dialog::FileDialog: {error}");
+                Command::none()
             }
         }
     }
 
-    fn loaded(&mut self, result: &io::Result<()>) {
+    fn loaded(&mut self) -> Command<Message> {
         match self {
-            Self::Loading { cache_recv } => {
-                if let Err(error) = result {
-                    error!("from load::load: {error:?}");
-                } else {
-                    match cache_recv.try_recv() {
-                        Ok(cache) => {
-                            *self = Self::Loaded { cache };
-                        }
-                        Err(error) => {
-                            error!("from cache_recv.try_recv(): {error:?}");
-                        }
-                    }
+            Self::Loading { load_recv } => match load_recv.try_recv() {
+                Ok(Ok(data)) => {
+                    *self = Self::Viewing {
+                        data,
+                        cache: Cache::new(),
+                    };
                 }
-            }
-
+                Ok(Err(error)) => {
+                    error!("from tokio::fs::read: {error}");
+                }
+                Err(error) => {
+                    error!("from load_recv.try_recv: {error}");
+                }
+            },
             _ => {
-                error!("called Viewer::loaded on a non-Loading variant");
+                error!("Viewer::loaded called on non-Loading variant");
             }
         }
+        Command::none()
     }
 }
 
@@ -204,8 +186,8 @@ impl Default for Viewer {
     fn default() -> Self {
         use rand::seq::SliceRandom;
 
-        Self::Unloaded {
-            emoji: *EMOJIS.choose(&mut thread_rng()).unwrap(),
+        Self::Empty {
+            emoji: *EMOJIS.choose(&mut rand::thread_rng()).unwrap(),
         }
     }
 }
@@ -222,11 +204,17 @@ impl Program<Message> for Viewer {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         match self {
-            Self::Loaded { cache } => vec![cache.draw(renderer, bounds.size(), |_| ())],
+            Self::Viewing { data, cache } => {
+                vec![cache.draw(renderer, bounds.size(), |frame| {
+                    if let Err(error) = render::render(frame, data) {
+                        error!("from render::render: {error}");
+                    }
+                })]
+            }
 
             Self::Loading { .. } => vec![],
 
-            Self::Unloaded { emoji } => {
+            Self::Empty { emoji } => {
                 let mut frame = Frame::new(renderer, bounds.size());
                 frame.translate(Vector::new(bounds.width * 0.5, bounds.height * 0.25));
                 frame.fill_text(canvas::Text {

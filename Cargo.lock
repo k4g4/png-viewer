@@ -2107,7 +2107,9 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "native-dialog",
+ "nom",
  "rand",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
