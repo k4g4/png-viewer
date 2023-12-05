@@ -1,61 +1,28 @@
 mod chunks;
+mod error;
 mod parse;
 
 use iced::widget::canvas;
 
-type NomError = nom::error::Error<Vec<u8>>;
+use chunks::Chunk;
+use error::Error;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("file parsing failed with error: {:?}, data: {:#?}", .0.code, .0.input)]
-    NomFailed(NomError),
+use self::chunks::Ihdr;
 
-    #[error("unknown critical chunk type found: {0}")]
-    UnknownCriticalChunk(String),
-
-    #[error("Invalid bit depth: {0}")]
-    InvalidBitDepth(u8),
-
-    #[error("Invalid color type: {0}")]
-    InvalidColorType(u8),
-
-    #[error("Invalid interlace method: {0}")]
-    InvalidInterlace(u8),
-}
-
-impl nom::error::ParseError<&[u8]> for Error {
-    fn from_error_kind(input: &[u8], kind: nom::error::ErrorKind) -> Self {
-        Self::NomFailed(NomError {
-            input: input[..input.len().min(256)].to_owned(),
-            code: kind,
-        })
-    }
-
-    fn append(_input: &[u8], _kind: nom::error::ErrorKind, other: Self) -> Self {
-        other
-    }
-}
-
-impl From<nom::Err<Error>> for Error {
-    fn from(nom_error: nom::Err<Error>) -> Self {
-        use nom::Err::*;
-
-        match nom_error {
-            Incomplete(_) => unreachable!("Incomplete(..) never returned by complete parsers"),
-            Error(inner_error) | Failure(inner_error) => inner_error,
-        }
-    }
-}
-
-impl nom::error::FromExternalError<&[u8], Self> for Error {
-    fn from_external_error(_input: &[u8], _kind: nom::error::ErrorKind, e: Self) -> Self {
-        e
-    }
-}
-
-pub fn render(_frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
+pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
     let (data, _) = parse::header(data)?;
-    let (_data, _chunk) = parse::chunk(data)?;
+    let (_data, chunk) = parse::chunk(data)?;
+    let Chunk::Ihdr(Ihdr {
+        width,
+        height,
+        bit_depth,
+        color_type,
+        interlace,
+    }) = chunk
+    else {
+        return Err(Error::MissingCritical("IHDR"));
+    };
+
     Ok(())
 }
 
@@ -73,10 +40,8 @@ mod test {
     impl std::fmt::Debug for BytesPrinter {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_char('\n')?;
-            for i in 0..4 {
-                f.write_str(&self.0.to_hex_from(8, i * 8))?;
-            }
-            Ok(())
+            let len = self.0.len().min(64);
+            f.write_str(&self.0[..len].to_hex(8))
         }
     }
 
@@ -109,7 +74,7 @@ mod test {
     }
 
     #[test]
-    fn parse_chunk() -> Result<(), Box<dyn Error>> {
+    fn parse_ihdr() -> Result<(), Box<dyn Error>> {
         let (_, chunk) = preceded(header, chunk)(PNG)?;
         assert_eq!(
             chunk,

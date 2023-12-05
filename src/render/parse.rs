@@ -64,8 +64,8 @@ fn ihdr(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
     let (input, height) = be_u32(input)?;
     let (input, bit_depth) = one_byte_as::<BitDepth>(input)?;
     let (input, color_type) = one_byte_as::<ColorType>(input)?;
-    let (input, _compression) = tag(b"0")(input)?;
-    let (input, _filter) = tag(b"0")(input)?;
+    let (input, _compression) = tag(b"\x00")(input)?;
+    let (input, _filter) = tag(b"\x00")(input)?;
     let (input, interlace) = one_byte_as::<Interlace>(input)?;
     Ok((
         input,
