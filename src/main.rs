@@ -11,7 +11,6 @@ use iced::{
     window, Application, Command, Element, Length, Rectangle, Renderer, Settings, Theme, Vector,
 };
 use tokio::sync::oneshot;
-use tracing::{debug, error};
 
 const SIZE: (u32, u32) = (700, 700);
 const MIN_SIZE: (u32, u32) = (200, 400);
@@ -137,7 +136,7 @@ impl Viewer {
             .show_open_single_file()
         {
             Ok(Some(path)) => {
-                debug!("Loading: {}", path.display());
+                tracing::debug!("Loading: {}", path.display());
                 let (load_send, load_recv) = oneshot::channel();
                 *self = Self::Loading { load_recv };
                 Command::perform(tokio::fs::read(path), |result| {
@@ -147,12 +146,12 @@ impl Viewer {
             }
 
             Ok(None) => {
-                debug!("No file selected");
+                tracing::debug!("No file selected");
                 Command::none()
             }
 
             Err(error) => {
-                error!("from native_dialog::FileDialog: {error}");
+                tracing::error!("from native_dialog::FileDialog: {error}");
                 Command::none()
             }
         }
@@ -168,14 +167,14 @@ impl Viewer {
                     };
                 }
                 Ok(Err(error)) => {
-                    error!("from tokio::fs::read: {error}");
+                    tracing::error!("from tokio::fs::read: {error}");
                 }
                 Err(error) => {
-                    error!("from load_recv.try_recv: {error}");
+                    tracing::error!("from load_recv.try_recv: {error}");
                 }
             },
             _ => {
-                error!("Viewer::loaded called on non-Loading variant");
+                tracing::error!("Viewer::loaded called on non-Loading variant");
             }
         }
         Command::none()
@@ -207,7 +206,7 @@ impl Program<Message> for Viewer {
             Self::Viewing { data, cache } => {
                 vec![cache.draw(renderer, bounds.size(), |frame| {
                     if let Err(error) = render::render(frame, data) {
-                        error!("from render::render: {error}");
+                        tracing::error!("from render::render: {error}");
                     }
                 })]
             }
