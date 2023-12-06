@@ -2,8 +2,9 @@ use super::chunks::*;
 use super::Error;
 
 use nom::combinator::all_consuming;
+use nom::combinator::iterator;
+use nom::combinator::map;
 use nom::combinator::map_res;
-use nom::Parser;
 use nom::{
     bytes::complete::{tag, take, take_while_m_n},
     character::is_alphabetic,
@@ -14,10 +15,9 @@ use nom::{
 };
 
 fn one_byte_as<Into: TryFrom<u8, Error = Error>>(input: &[u8]) -> IResult<&[u8], Into, Error> {
-    map_res(take(1usize).map(|input: &[u8]| input[0]), |b| {
+    map_res(map(take(1usize), |input: &[u8]| input[0]), |b| {
         Into::try_from(b)
-    })
-    .parse(input)
+    })(input)
 }
 
 pub fn header(input: &[u8]) -> IResult<&[u8], &[u8], Error> {
@@ -33,7 +33,7 @@ pub fn chunk(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
     let (input, ty) = take_while_m_n(4, 4, is_alphabetic)(input)?;
     let critical = ty[0].is_ascii_uppercase();
     let (input, chunk_data) = take(length)(input)?;
-    let (_input, _crc) = take(4usize)(input)?;
+    let (input, _crc) = take(4usize)(input)?;
 
     let ty_upper = {
         let mut ty: [u8; 4] = ty.try_into().expect("just took exactly 4");
@@ -41,18 +41,24 @@ pub fn chunk(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
         ty
     };
 
-    all_consuming(match &ty_upper[..] {
+    let (_, chunk) = all_consuming(match &ty_upper {
         b"IHDR" => ihdr,
+        b"PLTE" => plte,
+        b"IDAT" => idat,
+        b"IEND" => iend,
         _ => {
             if critical {
                 return Err(nom::Err::Failure(Error::UnknownCriticalChunk(
                     String::from_utf8(ty_upper.to_vec()).unwrap_or_else(|_| "{invalid}".into()),
                 )));
             } else {
+                tracing::debug!("found unknown chunk: {:?}", std::str::from_utf8(&ty_upper));
                 unknown
             }
         }
-    })(chunk_data)
+    })(chunk_data)?;
+
+    Ok((input, chunk))
 }
 
 fn unknown(_input: &[u8]) -> IResult<&[u8], Chunk, Error> {
@@ -67,14 +73,43 @@ fn ihdr(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
     let (input, _compression) = tag(b"\x00")(input)?;
     let (input, _filter) = tag(b"\x00")(input)?;
     let (input, interlace) = one_byte_as::<Interlace>(input)?;
+
     Ok((
         input,
-        Chunk::Ihdr(Ihdr {
+        Chunk::Ihdr {
             width,
             height,
             bit_depth,
             color_type,
             interlace,
-        }),
+        },
     ))
+}
+
+fn plte(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    if input.len() % 3 > 0 || input.len() > 256 * 3 {
+        return Err(nom::Err::Failure(Error::InvalidPaletteSize(input.len())));
+    }
+    let mut iter = iterator(
+        input,
+        map(take(3usize), |rgb: &[u8]| {
+            iced::Color::from_rgb8(rgb[0], rgb[1], rgb[2])
+        }),
+    );
+    let colors = iter.collect();
+    let (input, _) = iter.finish()?;
+
+    Ok((input, Chunk::Plte(colors)))
+}
+
+fn idat(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    Ok((b"", Chunk::Idat))
+}
+
+fn iend(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    if input.is_empty() {
+        Ok((input, Chunk::Iend))
+    } else {
+        Err(nom::Err::Failure(Error::InvalidIEnd))
+    }
 }

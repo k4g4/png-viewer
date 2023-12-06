@@ -65,16 +65,16 @@ impl TryFrom<u8> for Interlace {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Ihdr {
-    pub width: u32,
-    pub height: u32,
-    pub bit_depth: BitDepth,
-    pub color_type: ColorType,
-    pub interlace: Interlace,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum Chunk {
-    Ihdr(Ihdr),
+    Ihdr {
+        width: u32,
+        height: u32,
+        bit_depth: BitDepth,
+        color_type: ColorType,
+        interlace: Interlace,
+    },
+    Plte(Vec<iced::Color>),
+    Idat,
+    Iend,
     Unknown,
 }

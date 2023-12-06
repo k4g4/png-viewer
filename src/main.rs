@@ -1,5 +1,6 @@
 // uncomment for release: #![windows_subsystem = "windows"]
-mod render;
+
+use png_viewer::render;
 
 use iced::{
     alignment, executor, mouse, theme,
@@ -21,6 +22,7 @@ fn main() -> iced::Result {
     tracing_subscriber::fmt::fmt()
         .with_env_filter("png_viewer")
         .init();
+
     App::run(Settings {
         window: window::Settings {
             size: SIZE,

@@ -2,6 +2,7 @@
 name = "png-viewer"
 version = "0.1.0"
 edition = "2021"
+default-run = "png-viewer"
 
 [dependencies]
 iced = { version = "0.10.0", features = ["canvas", "image", "tokio"] }

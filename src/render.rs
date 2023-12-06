@@ -1,24 +1,22 @@
-mod chunks;
-mod error;
-mod parse;
+pub mod chunks;
+pub mod error;
+pub mod parse;
 
 use iced::widget::canvas;
 
 use chunks::Chunk;
 use error::Error;
 
-use self::chunks::Ihdr;
-
 pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
     let (data, _) = parse::header(data)?;
     let (_data, chunk) = parse::chunk(data)?;
-    let Chunk::Ihdr(Ihdr {
+    let Chunk::Ihdr {
         width,
         height,
         bit_depth,
         color_type,
         interlace,
-    }) = chunk
+    } = chunk
     else {
         return Err(Error::MissingCritical("IHDR"));
     };
@@ -29,7 +27,11 @@ pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
 #[cfg(test)]
 mod test {
     use super::{chunks::*, parse::*};
-    use nom::{sequence::preceded, HexDisplay};
+    use nom::{
+        combinator::{cut, iterator},
+        sequence::preceded,
+        HexDisplay,
+    };
     use std::{error::Error, fmt::Write};
 
     const PNG: &[u8] = include_bytes!("../assets/xkcd.png");
@@ -78,14 +80,25 @@ mod test {
         let (_, chunk) = preceded(header, chunk)(PNG)?;
         assert_eq!(
             chunk,
-            Chunk::Ihdr(Ihdr {
+            Chunk::Ihdr {
                 width: 293,
                 height: 165,
                 bit_depth: BitDepth::Eight,
                 color_type: ColorType::Rgb,
                 interlace: Interlace::None,
-            })
+            }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn iend_is_last() -> Result<(), Box<dyn Error>> {
+        let (input, _) = header(PNG)?;
+        let mut iter = iterator(input, chunk);
+        let last_chunk = iter.last();
+        let (input, _) = iter.finish()?;
+        assert!(input.is_empty());
+        assert_eq!(last_chunk, Some(Chunk::Iend));
         Ok(())
     }
 }
