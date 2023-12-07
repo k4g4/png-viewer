@@ -1,10 +1,21 @@
-#[derive(Debug, Clone, PartialEq)]
+use super::{one_byte_as, Error};
+
+use nom::{
+    bytes::complete::{tag, take, take_while_m_n},
+    character::is_alphabetic,
+    combinator::all_consuming,
+    number::complete::be_u32,
+    Err, IResult,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum BitDepth {
-    One,
-    Two,
-    Four,
-    Eight,
-    Sixteen,
+    One = 1,
+    Two = 2,
+    Four = 4,
+    Eight = 8,
+    Sixteen = 16,
 }
 
 impl TryFrom<u8> for BitDepth {
@@ -22,13 +33,14 @@ impl TryFrom<u8> for BitDepth {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum ColorType {
-    GrayScale,
-    Rgb,
-    Palette,
-    GrayScaleAlpha,
-    RgbAlpha,
+    GrayScale = 0,
+    Rgb = 2,
+    Palette = 3,
+    GrayScaleAlpha = 4,
+    RgbAlpha = 6,
 }
 
 impl TryFrom<u8> for ColorType {
@@ -46,10 +58,10 @@ impl TryFrom<u8> for ColorType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Interlace {
-    Adam7,
-    None,
+    None = 0,
+    Adam7 = 1,
 }
 
 impl TryFrom<u8> for Interlace {
@@ -68,6 +80,14 @@ impl TryFrom<u8> for Interlace {
 pub struct Colors<'data>(&'data [u8]);
 
 impl<'data> Colors<'data> {
+    pub fn new(input: &'data [u8]) -> Result<Self, super::Error> {
+        if input.len() % 3 > 0 || input.len() > 256 * 3 {
+            Err(super::Error::InvalidPaletteSize(input.len()))
+        } else {
+            Ok(Self(input))
+        }
+    }
+
     fn get(&self, index: usize) -> iced::Color {
         if let [r, g, b] = self.0[index * 3..][..3] {
             iced::Color::from_rgb8(r, g, b)
@@ -85,18 +105,6 @@ impl<'data> Colors<'data> {
     }
 }
 
-impl<'data> TryFrom<&[u8]> for Colors<'data> {
-    type Error = super::Error;
-
-    fn try_from(input: &[u8]) -> Result<Self, Self::Error> {
-        if input.len() % 3 > 0 || input.len() > 256 * 3 {
-            Err(super::Error::InvalidPaletteSize(input.len()))
-        } else {
-            Ok(Self(input))
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Chunk<'data> {
     Ihdr {
@@ -110,4 +118,81 @@ pub enum Chunk<'data> {
     Idat(&'data [u8]),
     Iend,
     Unknown,
+}
+
+pub fn chunk(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    let (input, length) = be_u32(input)?;
+    let (input, ty) = take_while_m_n(4, 4, is_alphabetic)(input)?;
+    let critical = ty[0].is_ascii_uppercase();
+    let (input, chunk_data) = take(length)(input)?;
+    let (input, _crc) = take(4usize)(input)?;
+
+    let ty_upper = {
+        let mut ty: [u8; 4] = ty.try_into().expect("just took exactly 4");
+        ty.make_ascii_uppercase();
+        ty
+    };
+
+    let (_, chunk) = all_consuming(match &ty_upper {
+        b"IHDR" => ihdr,
+        b"PLTE" => plte,
+        b"IDAT" => idat,
+        b"IEND" => iend,
+        _ => {
+            if critical {
+                return Err(Err::Failure(Error::UnknownCriticalChunk(
+                    String::from_utf8(ty_upper.to_vec()).unwrap_or_else(|_| "{invalid}".into()),
+                )));
+            } else {
+                tracing::debug!("found unknown chunk: {:?}", std::str::from_utf8(&ty_upper));
+                unknown
+            }
+        }
+    })(chunk_data)?;
+
+    Ok((input, chunk))
+}
+
+fn unknown(_input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    Ok((b"", Chunk::Unknown))
+}
+
+fn ihdr(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    let (input, width) = be_u32(input)?;
+    let (input, height) = be_u32(input)?;
+    let (input, bit_depth) = one_byte_as::<BitDepth>(input)?;
+    let (input, color_type) = one_byte_as::<ColorType>(input)?;
+    let (input, _compression) = tag(b"\x00")(input)?;
+    let (input, _filter) = tag(b"\x00")(input)?;
+    let (input, interlace) = one_byte_as::<Interlace>(input)?;
+
+    Ok((
+        input,
+        Chunk::Ihdr {
+            width,
+            height,
+            bit_depth,
+            color_type,
+            interlace,
+        },
+    ))
+}
+
+fn plte(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    Ok((
+        input,
+        Chunk::Plte(Colors::new(input).map_err(Err::Failure)?),
+    ))
+}
+
+fn idat(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    Ok((b"", Chunk::Idat(input)))
+}
+
+fn iend(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    if input.is_empty() {
+        Ok((input, Chunk::Iend))
+    } else {
+        Err(Err::Failure(Error::InvalidIEnd))
+    }
 }

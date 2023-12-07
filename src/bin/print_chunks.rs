@@ -10,8 +10,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     args.next();
     let file_path = args.next().ok_or("Missing file path arg.")?;
     let file_data = read(file_path)?;
-    let (input, _) = parse::header(&file_data)?;
-    let mut iter = iterator(input, parse::chunk);
+    let (input, _) = header(&file_data)?;
+    let mut iter = iterator(input, chunks::chunk);
     for chunk in &mut iter {
         println!("{chunk:?}");
     }

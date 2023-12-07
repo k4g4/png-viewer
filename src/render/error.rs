@@ -2,8 +2,12 @@ use nom::HexDisplay;
 
 type NomError = nom::error::Error<DbgString>;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Default)]
 pub enum Error {
+    #[default]
+    #[error("unknown error occurred")]
+    Unknown,
+
     #[error("file parsing failed with error: {}; data:{:?}", .0.code.description(), .0.input)]
     NomFailed(NomError),
 
@@ -16,11 +20,17 @@ pub enum Error {
     #[error("invalid color type: {0}")]
     InvalidColorType(u8),
 
+    #[error("invalid bit depth ({0}) and color type ({1}) combination")]
+    InvalidBitColorCombo(u8, u8),
+
     #[error("invalid interlace method: {0}")]
     InvalidInterlace(u8),
 
     #[error("invalid palette size: {0}")]
     InvalidPaletteSize(usize),
+
+    #[error("invalid filter type: {0}")]
+    InvalidFilterType(u8),
 
     #[error("critical chunk not found: {0}")]
     MissingCritical(&'static str),
@@ -30,6 +40,16 @@ pub enum Error {
 
     #[error("duplicate IHDR chunk found")]
     DuplicateIhdr,
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        error
+            .into_inner()
+            .and_then(|boxed| boxed.downcast::<Error>().ok())
+            .map(|boxed| *boxed)
+            .unwrap_or_default()
+    }
 }
 
 pub struct DbgString(String);
