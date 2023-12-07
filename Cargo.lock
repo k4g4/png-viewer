@@ -2105,6 +2105,7 @@ dependencies = [
 name = "png-viewer"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "iced",
  "native-dialog",
  "nom",

@@ -87,23 +87,14 @@ fn ihdr(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
 }
 
 fn plte(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
-    if input.len() % 3 > 0 || input.len() > 256 * 3 {
-        return Err(nom::Err::Failure(Error::InvalidPaletteSize(input.len())));
-    }
-    let mut iter = iterator(
+    Ok((
         input,
-        map(take(3usize), |rgb: &[u8]| {
-            iced::Color::from_rgb8(rgb[0], rgb[1], rgb[2])
-        }),
-    );
-    let colors = iter.collect();
-    let (input, _) = iter.finish()?;
-
-    Ok((input, Chunk::Plte(colors)))
+        Chunk::Plte(input.try_into().map_err(nom::Err::Failure)?),
+    ))
 }
 
 fn idat(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
-    Ok((b"", Chunk::Idat))
+    Ok((b"", Chunk::Idat(input)))
 }
 
 fn iend(input: &[u8]) -> IResult<&[u8], Chunk, Error> {

@@ -2,14 +2,21 @@ pub mod chunks;
 pub mod error;
 pub mod parse;
 
+use std::io::Write;
+
+use flate2::write::DeflateDecoder;
 use iced::widget::canvas;
 
 use chunks::Chunk;
 use error::Error;
+use nom::combinator::iterator;
+
+use self::chunks::{BitDepth, ColorType, Colors, Interlace};
 
 pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
     let (data, _) = parse::header(data)?;
     let (_data, chunk) = parse::chunk(data)?;
+
     let Chunk::Ihdr {
         width,
         height,
@@ -21,7 +28,71 @@ pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
         return Err(Error::MissingCritical("IHDR"));
     };
 
-    Ok(())
+    let mut decoder = DeflateDecoder::new(Renderer::new(
+        frame, width, height, bit_depth, color_type, interlace,
+    ));
+    for chunk in &mut iterator(data, parse::chunk) {
+        match chunk {
+            Chunk::Ihdr { .. } => {
+                return Err(Error::DuplicateIhdr);
+            }
+            Chunk::Plte(colors) => {
+                decoder.get_mut().set_palette(colors);
+            }
+            Chunk::Idat(data) => {
+                decoder.write_all(data);
+            }
+            Chunk::Iend => {
+                return Ok(());
+            }
+            Chunk::Unknown => {}
+        }
+    }
+
+    Err(Error::MissingCritical("IEND"))
+}
+
+struct Renderer<'frame, 'data> {
+    frame: &'frame mut canvas::Frame,
+    dimensions: iced::Size,
+    bit_depth: BitDepth,
+    color_type: ColorType,
+    interlace: Interlace,
+    palette: Option<Colors<'data>>,
+}
+
+impl<'frame, 'data> Renderer<'frame, 'data> {
+    fn new(
+        frame: &'frame mut canvas::Frame,
+        width: u32,
+        height: u32,
+        bit_depth: BitDepth,
+        color_type: ColorType,
+        interlace: Interlace,
+    ) -> Self {
+        Self {
+            frame,
+            dimensions: iced::Size::new(width as f32, height as f32),
+            bit_depth,
+            color_type,
+            interlace,
+            palette: None,
+        }
+    }
+
+    fn set_palette(&mut self, colors: Colors<'data>) {
+        self.palette = Some(colors);
+    }
+}
+
+impl Write for Renderer<'_, '_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        todo!()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

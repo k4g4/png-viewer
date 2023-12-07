@@ -27,6 +27,9 @@ pub enum Error {
 
     #[error("invalid IEND chunk found")]
     InvalidIEnd,
+
+    #[error("duplicate IHDR chunk found")]
+    DuplicateIhdr,
 }
 
 pub struct DbgString(String);

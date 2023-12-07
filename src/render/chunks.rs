@@ -65,7 +65,40 @@ impl TryFrom<u8> for Interlace {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Chunk {
+pub struct Colors<'data>(&'data [u8]);
+
+impl<'data> Colors<'data> {
+    fn get(&self, index: usize) -> iced::Color {
+        if let [r, g, b] = self.0[index * 3..][..3] {
+            iced::Color::from_rgb8(r, g, b)
+        } else {
+            panic!(
+                "index out of bounds: the len is {} but the index is {}",
+                self.len(),
+                index
+            )
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.0.len() / 3
+    }
+}
+
+impl<'data> TryFrom<&[u8]> for Colors<'data> {
+    type Error = super::Error;
+
+    fn try_from(input: &[u8]) -> Result<Self, Self::Error> {
+        if input.len() % 3 > 0 || input.len() > 256 * 3 {
+            Err(super::Error::InvalidPaletteSize(input.len()))
+        } else {
+            Ok(Self(input))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Chunk<'data> {
     Ihdr {
         width: u32,
         height: u32,
@@ -73,8 +106,8 @@ pub enum Chunk {
         color_type: ColorType,
         interlace: Interlace,
     },
-    Plte(Vec<iced::Color>),
-    Idat,
+    Plte(Colors<'data>),
+    Idat(&'data [u8]),
     Iend,
     Unknown,
 }

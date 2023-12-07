@@ -5,6 +5,7 @@ edition = "2021"
 default-run = "png-viewer"
 
 [dependencies]
+flate2 = "1.0.28"
 iced = { version = "0.10.0", features = ["canvas", "image", "tokio"] }
 native-dialog = "0.7.0"
 nom = "7.1.3"
