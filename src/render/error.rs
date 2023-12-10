@@ -40,18 +40,25 @@ pub enum Error {
 
     #[error("duplicate IHDR chunk found")]
     DuplicateIhdr,
+
+    #[error("io error found: {0}")]
+    IoError(#[source] std::io::Error),
 }
 
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
-        error
-            .into_inner()
-            .and_then(|boxed| boxed.downcast::<Error>().ok())
-            .map(|boxed| *boxed)
-            .unwrap_or_default()
+        match error.get_ref() {
+            Some(error_ref) if error_ref.is::<Self>() => error
+                .into_inner()
+                .and_then(|boxed| boxed.downcast().ok())
+                .map(|boxed| *boxed)
+                .unwrap_or_default(),
+            _ => Self::IoError(error),
+        }
     }
 }
 
+#[derive(Clone)]
 pub struct DbgString(String);
 
 impl std::fmt::Debug for DbgString {

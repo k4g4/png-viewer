@@ -111,10 +111,10 @@ impl<'data> Colors<'data> {
     }
 }
 
-#[repr(transparent)]
-pub struct BytesPrinter([u8]);
+#[derive(Copy, Clone, PartialEq)]
+pub struct Bytes<'data>(&'data [u8]);
 
-impl std::fmt::Debug for BytesPrinter {
+impl<'data> std::fmt::Debug for Bytes<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_char('\n')?;
         let len = self.0.len().min(64);
@@ -122,24 +122,15 @@ impl std::fmt::Debug for BytesPrinter {
     }
 }
 
-impl std::cmp::PartialEq for BytesPrinter {
-    fn eq(&self, other: &Self) -> bool {
-        &self.0 == &other.0
+impl<'data> From<&'data [u8]> for Bytes<'data> {
+    fn from(value: &'data [u8]) -> Self {
+        Self(value)
     }
 }
 
-// SAFETY:  BytesPrinter is just a transparent newtype around [u8],
-//          so the transmute is trivial.
-
-impl From<&[u8]> for &BytesPrinter {
-    fn from(value: &[u8]) -> Self {
-        unsafe { std::mem::transmute(value) }
-    }
-}
-
-impl From<&BytesPrinter> for &[u8] {
-    fn from(value: &BytesPrinter) -> Self {
-        unsafe { std::mem::transmute(value) }
+impl<'data> From<Bytes<'data>> for &'data [u8] {
+    fn from(value: Bytes<'data>) -> Self {
+        value.0
     }
 }
 
@@ -153,7 +144,7 @@ pub enum Chunk<'data> {
         interlace: Interlace,
     },
     Plte(Colors<'data>),
-    Idat(&'data BytesPrinter),
+    Idat(Bytes<'data>),
     Iend,
     Unknown,
 }

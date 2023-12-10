@@ -3,7 +3,7 @@ pub mod error;
 
 use std::{cell::RefCell, io::Write};
 
-use flate2::write::DeflateDecoder;
+use flate2::write::ZlibDecoder;
 use iced::widget::canvas;
 
 use chunks::Chunk;
@@ -20,7 +20,7 @@ use self::chunks::{BitDepth, ColorType, Colors, Interlace};
 
 pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
     let (data, _) = header(data)?;
-    let (_data, chunk) = chunks::chunk(data)?;
+    let (data, chunk) = chunks::chunk(data)?;
 
     let Chunk::Ihdr {
         width,
@@ -33,7 +33,7 @@ pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
         return Err(Error::MissingCritical("IHDR"));
     };
 
-    let mut decoder = DeflateDecoder::new(Renderer::new(
+    let mut decoder = ZlibDecoder::new(Renderer::new(
         frame,
         width as usize,
         height as usize,
@@ -236,9 +236,8 @@ impl<'data, R: Render> Renderer<'data, R> {
     fn render(&mut self) -> Result<(), Error> {
         let mut renderable = self.renderable.borrow_mut();
 
-        let from_two_bytes = |first: u8, second: u8| {
-            (((first as u16) << 8) + second as u16) as f32 / u16::MAX as f32
-        };
+        let from_two_bytes =
+            |bytes: &[u8]| u16::from_be_bytes(bytes.try_into().unwrap()) as f32 / u16::MAX as f32;
 
         if self.bits_per_pixel < 8 {
             let input = (self.next_scanline.as_slice(), 0);
@@ -278,7 +277,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                         let grayscale = if bytes_per_pixel == 1 {
                             bytes[0] as f32 / u8::MAX as f32
                         } else {
-                            from_two_bytes(bytes[0], bytes[1])
+                            from_two_bytes(&bytes[..2])
                         };
                         let color = iced::Color::from_rgb(grayscale, grayscale, grayscale);
                         self.draw_pixel(&mut renderable, self.scanline, i, color);
@@ -298,9 +297,9 @@ impl<'data, R: Render> Renderer<'data, R> {
 
                     6 => {
                         for (i, bytes) in (&mut iter).enumerate() {
-                            let red = from_two_bytes(bytes[0], bytes[1]);
-                            let green = from_two_bytes(bytes[3], bytes[4]);
-                            let blue = from_two_bytes(bytes[4], bytes[5]);
+                            let red = from_two_bytes(&bytes[..2]);
+                            let green = from_two_bytes(&bytes[2..4]);
+                            let blue = from_two_bytes(&bytes[4..6]);
                             let color = iced::Color::from_rgb(red, green, blue);
                             self.draw_pixel(&mut renderable, self.scanline, i, color);
                         }
@@ -324,10 +323,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                                 bytes[1] as f32 / u8::MAX as f32,
                             )
                         } else {
-                            (
-                                from_two_bytes(bytes[0], bytes[1]),
-                                from_two_bytes(bytes[2], bytes[3]),
-                            )
+                            (from_two_bytes(&bytes[..2]), from_two_bytes(&bytes[2..4]))
                         };
                         let color = iced::Color::from_rgba(grayscale, grayscale, grayscale, alpha);
                         self.draw_pixel(&mut renderable, self.scanline, i, color);
@@ -347,10 +343,10 @@ impl<'data, R: Render> Renderer<'data, R> {
 
                     8 => {
                         for (i, bytes) in (&mut iter).enumerate() {
-                            let red = from_two_bytes(bytes[0], bytes[1]);
-                            let green = from_two_bytes(bytes[3], bytes[4]);
-                            let blue = from_two_bytes(bytes[4], bytes[5]);
-                            let alpha = from_two_bytes(bytes[6], bytes[7]);
+                            let red = from_two_bytes(&bytes[..2]);
+                            let green = from_two_bytes(&bytes[2..4]);
+                            let blue = from_two_bytes(&bytes[4..6]);
+                            let alpha = from_two_bytes(&bytes[6..8]);
                             let color = iced::Color::from_rgba(red, green, blue, alpha);
                             self.draw_pixel(&mut renderable, self.scanline, i, color);
                         }
@@ -403,10 +399,7 @@ mod test {
 
     macro_rules! assert_bytes {
         ($left:expr, $right:expr $(,)?) => {
-            assert_eq!(
-                <&BytesPrinter>::from($left as &[u8]),
-                <&BytesPrinter>::from($right as &[u8]),
-            )
+            assert_eq!(Bytes::from($left as &[u8]), Bytes::from($right as &[u8]),)
         };
     }
 
