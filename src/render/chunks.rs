@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use super::{one_byte_as, Error};
 
 use nom::{
@@ -5,7 +7,7 @@ use nom::{
     character::is_alphabetic,
     combinator::all_consuming,
     number::complete::be_u32,
-    Err, IResult,
+    Err, HexDisplay, IResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,7 +90,7 @@ impl<'data> Colors<'data> {
         }
     }
 
-    fn get(&self, index: usize) -> iced::Color {
+    pub fn get(&self, index: usize) -> iced::Color {
         if let [r, g, b] = self.0[index * 3..][..3] {
             iced::Color::from_rgb8(r, g, b)
         } else {
@@ -100,8 +102,44 @@ impl<'data> Colors<'data> {
         }
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.0.len() / 3
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+#[repr(transparent)]
+pub struct BytesPrinter([u8]);
+
+impl std::fmt::Debug for BytesPrinter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('\n')?;
+        let len = self.0.len().min(64);
+        f.write_str(&self.0[..len].to_hex(8))
+    }
+}
+
+impl std::cmp::PartialEq for BytesPrinter {
+    fn eq(&self, other: &Self) -> bool {
+        &self.0 == &other.0
+    }
+}
+
+// SAFETY:  BytesPrinter is just a transparent newtype around [u8],
+//          so the transmute is trivial.
+
+impl From<&[u8]> for &BytesPrinter {
+    fn from(value: &[u8]) -> Self {
+        unsafe { std::mem::transmute(value) }
+    }
+}
+
+impl From<&BytesPrinter> for &[u8] {
+    fn from(value: &BytesPrinter) -> Self {
+        unsafe { std::mem::transmute(value) }
     }
 }
 
@@ -115,7 +153,7 @@ pub enum Chunk<'data> {
         interlace: Interlace,
     },
     Plte(Colors<'data>),
-    Idat(&'data [u8]),
+    Idat(&'data BytesPrinter),
     Iend,
     Unknown,
 }
@@ -186,7 +224,7 @@ fn plte(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
 }
 
 fn idat(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
-    Ok((b"", Chunk::Idat(input)))
+    Ok((b"", Chunk::Idat(input.into())))
 }
 
 fn iend(input: &[u8]) -> IResult<&[u8], Chunk, Error> {

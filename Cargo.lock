@@ -2110,6 +2110,7 @@ dependencies = [
  "native-dialog",
  "nom",
  "rand",
+ "termcolor",
  "thiserror",
  "tokio",
  "tracing",

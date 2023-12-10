@@ -73,6 +73,16 @@ impl nom::error::ParseError<&[u8]> for Error {
     }
 }
 
+impl nom::error::ParseError<(&[u8], usize)> for Error {
+    fn from_error_kind(input: (&[u8], usize), kind: nom::error::ErrorKind) -> Self {
+        Error::from_error_kind(input.0, kind)
+    }
+
+    fn append(input: (&[u8], usize), kind: nom::error::ErrorKind, other: Self) -> Self {
+        Error::append(input.0, kind, other)
+    }
+}
+
 impl From<nom::Err<Error>> for Error {
     fn from(nom_error: nom::Err<Error>) -> Self {
         use nom::Err::*;
