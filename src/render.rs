@@ -157,6 +157,8 @@ impl<'data, R: Render> Renderer<'data, R> {
         };
         let scanline_len = (width * bits_per_pixel).div_ceil(8) + 1;
 
+        tracing::debug!("width: {width} height: {height} bit_depth: {bit_depth:?}");
+        tracing::debug!("color_type: {color_type:?} interlace: {interlace:?}");
         Ok(Self {
             renderable: RefCell::new(renderable),
             dimensions: iced::Size::new(width as f32, height as f32),
@@ -177,15 +179,17 @@ impl<'data, R: Render> Renderer<'data, R> {
     fn filter(&mut self) -> Result<(), Error> {
         let (_, filter_type) = one_byte_as::<FilterType>(&self.next_scanline)?;
         self.next_scanline[0] = 0;
-        let bytes_per_pixel = self.bits_per_pixel.div_ceil(8);
+
         match filter_type {
             FilterType::None => {}
+
             FilterType::Sub => {
-                for i in 1 + bytes_per_pixel..self.next_scanline.len() {
+                for i in 1..self.next_scanline.len() {
                     self.next_scanline[i] =
-                        self.next_scanline[i].wrapping_add(self.next_scanline[i - bytes_per_pixel]);
+                        self.next_scanline[i].wrapping_add(self.next_scanline[i - 1]);
                 }
             }
+
             FilterType::Up => {
                 if !self.prev_scanline.is_empty() {
                     for i in 1..self.next_scanline.len() {
@@ -194,19 +198,21 @@ impl<'data, R: Render> Renderer<'data, R> {
                     }
                 }
             }
+
             FilterType::Average => {
                 for i in 1..self.next_scanline.len() {
-                    let left = *self.next_scanline.get(i - bytes_per_pixel).unwrap_or(&0) as u16;
+                    let left = self.next_scanline[i - 1] as u16;
                     let up = *self.prev_scanline.get(i).unwrap_or(&0) as u16;
                     self.next_scanline[i] =
                         self.next_scanline[i].wrapping_add(((left + up) / 2) as u8);
                 }
             }
+
             FilterType::Paeth => {
                 for i in 1..self.next_scanline.len() {
-                    let left = *self.next_scanline.get(i - bytes_per_pixel).unwrap_or(&0) as u16;
-                    let up = *self.prev_scanline.get(i).unwrap_or(&0) as u16;
-                    let up_left = *self.prev_scanline.get(i - bytes_per_pixel).unwrap_or(&0) as u16;
+                    let left = self.next_scanline[i - 1] as i16;
+                    let up = *self.prev_scanline.get(i).unwrap_or(&0) as i16;
+                    let up_left = *self.prev_scanline.get(i - 1).unwrap_or(&0) as i16;
                     let p = left + up - up_left;
                     let (p_left, p_up, p_up_left) =
                         (p.abs_diff(left), p.abs_diff(up), p.abs_diff(up_left));
@@ -225,9 +231,9 @@ impl<'data, R: Render> Renderer<'data, R> {
         Ok(())
     }
 
-    fn draw_pixel(&self, renderable: &mut R, row: usize, column: usize, color: iced::Color) {
+    fn draw_pixel(&self, renderable: &mut R, x: usize, y: usize, color: iced::Color) {
         renderable.draw_rectangle(
-            iced::Point::new(row as f32, column as f32),
+            iced::Point::new(x as f32, y as f32),
             [2.0, 2.0].into(),
             color,
         );
@@ -249,7 +255,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                     for (i, bits) in (&mut iter).enumerate() {
                         let grayscale = bits as f32 / max_grayscale;
                         let color = iced::Color::from_rgb(grayscale, grayscale, grayscale);
-                        self.draw_pixel(&mut renderable, self.scanline, i, color);
+                        self.draw_pixel(&mut renderable, i, self.scanline, color);
                     }
                 }
 
@@ -257,7 +263,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                     if let Some(palette) = self.palette.as_ref() {
                         for (i, bits) in (&mut iter).enumerate() {
                             let color = palette.get(bits as usize);
-                            self.draw_pixel(&mut renderable, self.scanline, i, color);
+                            self.draw_pixel(&mut renderable, i, self.scanline, color);
                         }
                     }
                 }
@@ -280,7 +286,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                             from_two_bytes(&bytes[..2])
                         };
                         let color = iced::Color::from_rgb(grayscale, grayscale, grayscale);
-                        self.draw_pixel(&mut renderable, self.scanline, i, color);
+                        self.draw_pixel(&mut renderable, i, self.scanline, color);
                     }
                 }
 
@@ -291,7 +297,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                                 unreachable!("must be 3 bytes per pixel");
                             };
                             let color = iced::Color::from_rgb8(red, green, blue);
-                            self.draw_pixel(&mut renderable, self.scanline, i, color);
+                            self.draw_pixel(&mut renderable, i, self.scanline, color);
                         }
                     }
 
@@ -301,20 +307,22 @@ impl<'data, R: Render> Renderer<'data, R> {
                             let green = from_two_bytes(&bytes[2..4]);
                             let blue = from_two_bytes(&bytes[4..6]);
                             let color = iced::Color::from_rgb(red, green, blue);
-                            self.draw_pixel(&mut renderable, self.scanline, i, color);
+                            self.draw_pixel(&mut renderable, i, self.scanline, color);
                         }
                     }
 
                     _ => unreachable!("already checked in Renderer::new"),
                 },
+
                 ColorType::Palette => {
                     if let Some(palette) = self.palette.as_ref() {
                         for (i, byte) in (&mut iter).enumerate() {
                             let color = palette.get(byte[0] as usize);
-                            self.draw_pixel(&mut renderable, self.scanline, i, color);
+                            self.draw_pixel(&mut renderable, i, self.scanline, color);
                         }
                     }
                 }
+
                 ColorType::GrayScaleAlpha => {
                     for (i, bytes) in (&mut iter).enumerate() {
                         let (grayscale, alpha) = if bytes_per_pixel == 1 {
@@ -326,9 +334,10 @@ impl<'data, R: Render> Renderer<'data, R> {
                             (from_two_bytes(&bytes[..2]), from_two_bytes(&bytes[2..4]))
                         };
                         let color = iced::Color::from_rgba(grayscale, grayscale, grayscale, alpha);
-                        self.draw_pixel(&mut renderable, self.scanline, i, color);
+                        self.draw_pixel(&mut renderable, i, self.scanline, color);
                     }
                 }
+
                 ColorType::RgbAlpha => match bytes_per_pixel {
                     4 => {
                         for (i, bytes) in (&mut iter).enumerate() {
@@ -337,7 +346,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                             };
                             let alpha = alpha as f32 / i8::MAX as f32;
                             let color = iced::Color::from_rgba8(red, green, blue, alpha);
-                            self.draw_pixel(&mut renderable, self.scanline, i, color);
+                            self.draw_pixel(&mut renderable, i, self.scanline, color);
                         }
                     }
 
@@ -348,7 +357,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                             let blue = from_two_bytes(&bytes[4..6]);
                             let alpha = from_two_bytes(&bytes[6..8]);
                             let color = iced::Color::from_rgba(red, green, blue, alpha);
-                            self.draw_pixel(&mut renderable, self.scanline, i, color);
+                            self.draw_pixel(&mut renderable, i, self.scanline, color);
                         }
                     }
 
