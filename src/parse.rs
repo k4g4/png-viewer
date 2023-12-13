@@ -328,11 +328,11 @@ impl<'frame, 'data, 'state> Renderer<'frame, 'data, 'state> {
     }
 
     fn draw_pixel(&self, frame: &mut canvas::Frame, x: usize, y: usize, mut color: iced::Color) {
-        if let Some(gamma) = self.gamma {
-            color.r = color.r.powf(gamma);
-            color.g = color.g.powf(gamma);
-            color.b = color.b.powf(gamma);
-        }
+        // if let Some(gamma) = self.gamma {
+        //     color.r = color.r.powf(gamma);
+        //     color.g = color.g.powf(gamma);
+        //     color.b = color.b.powf(gamma);
+        // }
 
         frame.fill_rectangle(
             iced::Point::new(x as f32, y as f32) * self.state.zoom,
@@ -347,10 +347,10 @@ impl<'frame, 'data, 'state> Renderer<'frame, 'data, 'state> {
         let frame = self.frame.take().ok_or(Error::default())?;
 
         let from_two_bytes =
-            |bytes: &[u8]| u16::from_le_bytes(bytes.try_into().unwrap()) as f32 / u16::MAX as f32;
+            |bytes: &[u8]| u16::from_be_bytes(bytes.try_into().unwrap()) as f32 / u16::MAX as f32;
 
         if self.bits_per_pixel < 8 {
-            let input = (self.next_scanline.as_slice(), 0);
+            let input = (&self.next_scanline[1..], 0);
             let mut iter = iterator(input, take_bits::<_, u8, _, _>(self.bits_per_pixel));
 
             match self.color_type {
@@ -377,7 +377,7 @@ impl<'frame, 'data, 'state> Renderer<'frame, 'data, 'state> {
 
             iter.finish()?;
         } else {
-            let input = self.next_scanline.as_slice();
+            let input = &self.next_scanline[1..];
             let bytes_per_pixel = self.bits_per_pixel / 8;
             let mut iter = iterator(input, take(bytes_per_pixel));
 
@@ -429,7 +429,7 @@ impl<'frame, 'data, 'state> Renderer<'frame, 'data, 'state> {
 
                 ColorType::GrayScaleAlpha => {
                     for (i, bytes) in (&mut iter).enumerate() {
-                        let (grayscale, alpha) = if bytes_per_pixel == 1 {
+                        let (grayscale, alpha) = if bytes_per_pixel == 2 {
                             (
                                 bytes[0] as f32 / u8::MAX as f32,
                                 bytes[1] as f32 / u8::MAX as f32,
