@@ -1,5 +1,5 @@
 use nom::combinator::iterator;
-use png_viewer::render::*;
+use png_viewer::parse::*;
 use std::{env, error::Error, fs::read};
 
 fn main() -> Result<(), Box<dyn Error>> {

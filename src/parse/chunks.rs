@@ -146,13 +146,13 @@ pub enum Chunk<'data> {
     Plte(Colors<'data>),
     Idat(Bytes<'data>),
     Iend,
+    Gama(f32),
     Unknown,
 }
 
 pub fn chunk(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
     let (input, length) = be_u32(input)?;
     let (input, ty) = take_while_m_n(4, 4, is_alphabetic)(input)?;
-    let critical = ty[0].is_ascii_uppercase();
     let (input, chunk_data) = take(length)(input)?;
     let (input, _crc) = take(4usize)(input)?;
 
@@ -167,15 +167,10 @@ pub fn chunk(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
         b"PLTE" => plte,
         b"IDAT" => idat,
         b"IEND" => iend,
+        b"GAMA" => gama,
         _ => {
-            if critical {
-                return Err(Err::Failure(Error::UnknownCriticalChunk(
-                    String::from_utf8(ty_upper.to_vec()).unwrap_or_else(|_| "{invalid}".into()),
-                )));
-            } else {
-                tracing::debug!("found unknown chunk: {:?}", std::str::from_utf8(&ty_upper));
-                unknown
-            }
+            tracing::debug!("found unknown chunk: {:?}", std::str::from_utf8(&ty_upper));
+            unknown
         }
     })(chunk_data)?;
 
@@ -224,4 +219,9 @@ fn iend(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
     } else {
         Err(Err::Failure(Error::InvalidIEnd))
     }
+}
+
+fn gama(input: &[u8]) -> IResult<&[u8], Chunk, Error> {
+    let (input, gamma) = be_u32(input)?;
+    Ok((input, Chunk::Gama(gamma as f32 / 100_000.0)))
 }

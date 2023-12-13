@@ -11,9 +11,6 @@ pub enum Error {
     #[error("file parsing failed with error: {}; data:{:?}", .0.code.description(), .0.input)]
     NomFailed(NomError),
 
-    #[error("unknown critical chunk type found: {0}")]
-    UnknownCriticalChunk(String),
-
     #[error("invalid bit depth: {0}")]
     InvalidBitDepth(u8),
 

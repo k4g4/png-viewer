@@ -1,6 +1,6 @@
 // uncomment for release: #![windows_subsystem = "windows"]
 
-use png_viewer::render;
+use png_viewer::parse;
 
 use iced::{
     alignment, executor, mouse, theme,
@@ -194,11 +194,11 @@ impl Default for Viewer {
 }
 
 impl Program<Message> for Viewer {
-    type State = ();
+    type State = parse::State;
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &Renderer<Theme>,
         _theme: &Theme,
         bounds: Rectangle,
@@ -207,7 +207,7 @@ impl Program<Message> for Viewer {
         match self {
             Self::Viewing { data, cache } => {
                 vec![cache.draw(renderer, bounds.size(), |frame| {
-                    if let Err(error) = render::render(frame, data) {
+                    if let Err(error) = parse::render(frame, data, state) {
                         tracing::error!("from render::render: {error}");
                     }
                 })]
@@ -232,20 +232,59 @@ impl Program<Message> for Viewer {
 
     fn update(
         &self,
-        _state: &mut Self::State,
-        _event: canvas::Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        state: &mut Self::State,
+        event: canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> (canvas::event::Status, Option<Message>) {
-        (canvas::event::Status::Ignored, None)
+        let mut updated = false;
+
+        match self {
+            Viewer::Viewing { cache, .. } => match event {
+                canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                    let (mouse::ScrollDelta::Lines { y, .. }
+                    | mouse::ScrollDelta::Pixels { y, .. }) = delta;
+                    use std::cmp::Ordering::*;
+                    updated = match y.partial_cmp(&0.0) {
+                        Some(Greater) => state.zoom_in(),
+                        Some(Less) => state.zoom_out(),
+                        Some(Equal) => false,
+                        None => panic!("invalid scroll value"),
+                    };
+                    if updated {
+                        cache.clear();
+                    }
+                }
+
+                canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                    if cursor.is_over(bounds) =>
+                {
+                    state.zoom_toggle();
+                    cache.clear();
+                }
+
+                _ => {}
+            },
+            _ => {}
+        }
+
+        if updated {
+            (canvas::event::Status::Captured, None)
+        } else {
+            (canvas::event::Status::Ignored, None)
+        }
     }
 
     fn mouse_interaction(
         &self,
         _state: &Self::State,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        mouse::Interaction::default()
+        if cursor.is_over(bounds) && matches!(self, Self::Viewing { .. }) {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::default()
+        }
     }
 }

@@ -1,12 +1,12 @@
 pub mod chunks;
 pub mod error;
 
-use std::{cell::RefCell, io::Write};
+use std::io::Write;
 
 use flate2::write::ZlibDecoder;
 use iced::widget::canvas;
 
-use chunks::Chunk;
+use chunks::{BitDepth, Chunk, ColorType, Colors, Interlace};
 use error::Error;
 use nom::{
     bits::complete::take as take_bits,
@@ -16,9 +16,98 @@ use nom::{
     IResult,
 };
 
-use self::chunks::{BitDepth, ColorType, Colors, Interlace};
+#[derive(Default, Copy, Clone, Debug)]
+pub enum Zoom {
+    #[default]
+    X1,
+    X1p5,
+    X2,
+    X2p5,
+    X3,
+    X3p5,
+    X4,
+}
 
-pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
+impl From<Zoom> for iced::Size {
+    fn from(value: Zoom) -> Self {
+        [match value {
+            Zoom::X1 => 1.0,
+            Zoom::X1p5 => 1.5,
+            Zoom::X2 => 2.0,
+            Zoom::X2p5 => 2.5,
+            Zoom::X3 => 3.0,
+            Zoom::X3p5 => 3.5,
+            Zoom::X4 => 4.0,
+        }; 2]
+            .into()
+    }
+}
+
+impl std::ops::Mul<Zoom> for iced::Point {
+    type Output = Self;
+
+    fn mul(self, rhs: Zoom) -> Self::Output {
+        match rhs {
+            Zoom::X1 => self,
+            Zoom::X1p5 => [self.x * 1.5, self.y * 1.5].into(),
+            Zoom::X2 => [self.x * 2.0, self.y * 2.0].into(),
+            Zoom::X2p5 => [self.x * 2.5, self.y * 2.5].into(),
+            Zoom::X3 => [self.x * 3.0, self.y * 3.0].into(),
+            Zoom::X3p5 => [self.x * 3.5, self.y * 3.5].into(),
+            Zoom::X4 => [self.x * 4.0, self.y * 4.0].into(),
+        }
+    }
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct State {
+    zoom: Zoom,
+}
+
+impl State {
+    pub fn zoom_in(&mut self) -> bool {
+        let mut zoomed = true;
+        self.zoom = match self.zoom {
+            Zoom::X1 => Zoom::X1p5,
+            Zoom::X1p5 => Zoom::X2,
+            Zoom::X2 => Zoom::X2p5,
+            Zoom::X2p5 => Zoom::X3,
+            Zoom::X3 => Zoom::X3p5,
+            Zoom::X3p5 => Zoom::X4,
+            Zoom::X4 => {
+                zoomed = false;
+                Zoom::X4
+            }
+        };
+        zoomed
+    }
+
+    pub fn zoom_out(&mut self) -> bool {
+        let mut zoomed = true;
+        self.zoom = match self.zoom {
+            Zoom::X1 => {
+                zoomed = false;
+                Zoom::X1
+            }
+            Zoom::X1p5 => Zoom::X1,
+            Zoom::X2 => Zoom::X1p5,
+            Zoom::X2p5 => Zoom::X2,
+            Zoom::X3 => Zoom::X2p5,
+            Zoom::X3p5 => Zoom::X3,
+            Zoom::X4 => Zoom::X3p5,
+        };
+        zoomed
+    }
+
+    pub fn zoom_toggle(&mut self) {
+        self.zoom = match self.zoom {
+            Zoom::X1 | Zoom::X1p5 | Zoom::X2 | Zoom::X2p5 | Zoom::X3 | Zoom::X3p5 => Zoom::X4,
+            Zoom::X4 => Zoom::X1,
+        };
+    }
+}
+
+pub fn render(frame: &mut canvas::Frame, data: &[u8], state: &State) -> Result<(), Error> {
     let (data, _) = header(data)?;
     let (data, chunk) = chunks::chunk(data)?;
 
@@ -35,6 +124,7 @@ pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
 
     let mut decoder = ZlibDecoder::new(Renderer::new(
         frame,
+        state,
         width as usize,
         height as usize,
         bit_depth,
@@ -55,6 +145,9 @@ pub fn render(frame: &mut canvas::Frame, data: &[u8]) -> Result<(), Error> {
             }
             Chunk::Iend => {
                 return Ok(());
+            }
+            Chunk::Gama(gamma) => {
+                decoder.get_mut().set_gamma(gamma);
             }
             Chunk::Unknown => {}
         }
@@ -102,31 +195,24 @@ pub fn header(input: &[u8]) -> IResult<&[u8], &[u8], Error> {
     )))(input)
 }
 
-trait Render {
-    fn draw_rectangle(&mut self, top_left: iced::Point, size: iced::Size, color: iced::Color);
-}
-
-impl Render for &mut canvas::Frame {
-    fn draw_rectangle(&mut self, top_left: iced::Point, size: iced::Size, color: iced::Color) {
-        self.fill_rectangle(top_left, size, color);
-    }
-}
-
-struct Renderer<'data, R> {
-    renderable: RefCell<R>,
+struct Renderer<'frame, 'data, 'state> {
+    frame: Option<&'frame mut canvas::Frame>,
+    state: &'state State,
     dimensions: iced::Size,
     color_type: ColorType,
     bits_per_pixel: usize,
     interlace: Interlace,
     palette: Option<Colors<'data>>,
+    gamma: Option<f32>,
     scanline: usize,
     next_scanline: Vec<u8>,
     prev_scanline: Vec<u8>,
 }
 
-impl<'data, R: Render> Renderer<'data, R> {
+impl<'frame, 'data, 'state> Renderer<'frame, 'data, 'state> {
     fn new(
-        renderable: R,
+        frame: &'frame mut canvas::Frame,
+        state: &'state State,
         width: usize,
         height: usize,
         bit_depth: BitDepth,
@@ -160,12 +246,14 @@ impl<'data, R: Render> Renderer<'data, R> {
         tracing::debug!("width: {width} height: {height} bit_depth: {bit_depth:?}");
         tracing::debug!("color_type: {color_type:?} interlace: {interlace:?}");
         Ok(Self {
-            renderable: RefCell::new(renderable),
+            frame: Some(frame),
+            state,
             dimensions: iced::Size::new(width as f32, height as f32),
             color_type,
             bits_per_pixel,
             interlace,
             palette: None,
+            gamma: None,
             scanline: 0,
             next_scanline: Vec::with_capacity(scanline_len),
             prev_scanline: Vec::with_capacity(scanline_len),
@@ -176,8 +264,13 @@ impl<'data, R: Render> Renderer<'data, R> {
         self.palette = Some(colors);
     }
 
+    fn set_gamma(&mut self, gamma: f32) {
+        self.gamma = Some(gamma);
+    }
+
     fn filter(&mut self) -> Result<(), Error> {
         let (_, filter_type) = one_byte_as::<FilterType>(&self.next_scanline)?;
+        let bytes_per_pixel = (self.bits_per_pixel + 7) / 8;
         self.next_scanline[0] = 0;
 
         match filter_type {
@@ -185,8 +278,9 @@ impl<'data, R: Render> Renderer<'data, R> {
 
             FilterType::Sub => {
                 for i in 1..self.next_scanline.len() {
+                    let prior = i.saturating_sub(bytes_per_pixel);
                     self.next_scanline[i] =
-                        self.next_scanline[i].wrapping_add(self.next_scanline[i - 1]);
+                        self.next_scanline[i].wrapping_add(self.next_scanline[prior]);
                 }
             }
 
@@ -201,7 +295,8 @@ impl<'data, R: Render> Renderer<'data, R> {
 
             FilterType::Average => {
                 for i in 1..self.next_scanline.len() {
-                    let left = self.next_scanline[i - 1] as u16;
+                    let prior = i.saturating_sub(bytes_per_pixel);
+                    let left = self.next_scanline[prior] as u16;
                     let up = *self.prev_scanline.get(i).unwrap_or(&0) as u16;
                     self.next_scanline[i] =
                         self.next_scanline[i].wrapping_add(((left + up) / 2) as u8);
@@ -210,9 +305,10 @@ impl<'data, R: Render> Renderer<'data, R> {
 
             FilterType::Paeth => {
                 for i in 1..self.next_scanline.len() {
-                    let left = self.next_scanline[i - 1] as i16;
+                    let prior = i.saturating_sub(bytes_per_pixel);
+                    let left = self.next_scanline[prior] as i16;
                     let up = *self.prev_scanline.get(i).unwrap_or(&0) as i16;
-                    let up_left = *self.prev_scanline.get(i - 1).unwrap_or(&0) as i16;
+                    let up_left = *self.prev_scanline.get(prior).unwrap_or(&0) as i16;
                     let p = left + up - up_left;
                     let (p_left, p_up, p_up_left) =
                         (p.abs_diff(left), p.abs_diff(up), p.abs_diff(up_left));
@@ -231,19 +327,27 @@ impl<'data, R: Render> Renderer<'data, R> {
         Ok(())
     }
 
-    fn draw_pixel(&self, renderable: &mut R, x: usize, y: usize, color: iced::Color) {
-        renderable.draw_rectangle(
-            iced::Point::new(x as f32, y as f32),
-            [2.0, 2.0].into(),
+    fn draw_pixel(&self, frame: &mut canvas::Frame, x: usize, y: usize, mut color: iced::Color) {
+        if let Some(gamma) = self.gamma {
+            color.r = color.r.powf(gamma);
+            color.g = color.g.powf(gamma);
+            color.b = color.b.powf(gamma);
+        }
+
+        frame.fill_rectangle(
+            iced::Point::new(x as f32, y as f32) * self.state.zoom,
+            self.state.zoom.into(),
             color,
         );
+
+        self.draw_pixel_test(color, x == 0);
     }
 
     fn render(&mut self) -> Result<(), Error> {
-        let mut renderable = self.renderable.borrow_mut();
+        let frame = self.frame.take().ok_or(Error::default())?;
 
         let from_two_bytes =
-            |bytes: &[u8]| u16::from_be_bytes(bytes.try_into().unwrap()) as f32 / u16::MAX as f32;
+            |bytes: &[u8]| u16::from_le_bytes(bytes.try_into().unwrap()) as f32 / u16::MAX as f32;
 
         if self.bits_per_pixel < 8 {
             let input = (self.next_scanline.as_slice(), 0);
@@ -255,7 +359,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                     for (i, bits) in (&mut iter).enumerate() {
                         let grayscale = bits as f32 / max_grayscale;
                         let color = iced::Color::from_rgb(grayscale, grayscale, grayscale);
-                        self.draw_pixel(&mut renderable, i, self.scanline, color);
+                        self.draw_pixel(frame, i, self.scanline, color);
                     }
                 }
 
@@ -263,7 +367,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                     if let Some(palette) = self.palette.as_ref() {
                         for (i, bits) in (&mut iter).enumerate() {
                             let color = palette.get(bits as usize);
-                            self.draw_pixel(&mut renderable, i, self.scanline, color);
+                            self.draw_pixel(frame, i, self.scanline, color);
                         }
                     }
                 }
@@ -286,7 +390,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                             from_two_bytes(&bytes[..2])
                         };
                         let color = iced::Color::from_rgb(grayscale, grayscale, grayscale);
-                        self.draw_pixel(&mut renderable, i, self.scanline, color);
+                        self.draw_pixel(frame, i, self.scanline, color);
                     }
                 }
 
@@ -294,10 +398,10 @@ impl<'data, R: Render> Renderer<'data, R> {
                     3 => {
                         for (i, bytes) in (&mut iter).enumerate() {
                             let &[red, green, blue] = bytes else {
-                                unreachable!("must be 3 bytes per pixel");
+                                unreachable!("must be 3 bytes per pixel")
                             };
                             let color = iced::Color::from_rgb8(red, green, blue);
-                            self.draw_pixel(&mut renderable, i, self.scanline, color);
+                            self.draw_pixel(frame, i, self.scanline, color);
                         }
                     }
 
@@ -307,7 +411,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                             let green = from_two_bytes(&bytes[2..4]);
                             let blue = from_two_bytes(&bytes[4..6]);
                             let color = iced::Color::from_rgb(red, green, blue);
-                            self.draw_pixel(&mut renderable, i, self.scanline, color);
+                            self.draw_pixel(frame, i, self.scanline, color);
                         }
                     }
 
@@ -318,7 +422,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                     if let Some(palette) = self.palette.as_ref() {
                         for (i, byte) in (&mut iter).enumerate() {
                             let color = palette.get(byte[0] as usize);
-                            self.draw_pixel(&mut renderable, i, self.scanline, color);
+                            self.draw_pixel(frame, i, self.scanline, color);
                         }
                     }
                 }
@@ -334,7 +438,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                             (from_two_bytes(&bytes[..2]), from_two_bytes(&bytes[2..4]))
                         };
                         let color = iced::Color::from_rgba(grayscale, grayscale, grayscale, alpha);
-                        self.draw_pixel(&mut renderable, i, self.scanline, color);
+                        self.draw_pixel(frame, i, self.scanline, color);
                     }
                 }
 
@@ -342,11 +446,11 @@ impl<'data, R: Render> Renderer<'data, R> {
                     4 => {
                         for (i, bytes) in (&mut iter).enumerate() {
                             let &[red, green, blue, alpha] = bytes else {
-                                unreachable!("must be 4 bytes per pixel");
+                                unreachable!("must be 4 bytes per pixel")
                             };
-                            let alpha = alpha as f32 / i8::MAX as f32;
+                            let alpha = alpha as f32 / u8::MAX as f32;
                             let color = iced::Color::from_rgba8(red, green, blue, alpha);
-                            self.draw_pixel(&mut renderable, i, self.scanline, color);
+                            self.draw_pixel(frame, i, self.scanline, color);
                         }
                     }
 
@@ -357,7 +461,7 @@ impl<'data, R: Render> Renderer<'data, R> {
                             let blue = from_two_bytes(&bytes[4..6]);
                             let alpha = from_two_bytes(&bytes[6..8]);
                             let color = iced::Color::from_rgba(red, green, blue, alpha);
-                            self.draw_pixel(&mut renderable, i, self.scanline, color);
+                            self.draw_pixel(frame, i, self.scanline, color);
                         }
                     }
 
@@ -368,11 +472,12 @@ impl<'data, R: Render> Renderer<'data, R> {
             iter.finish()?;
         }
 
+        self.frame = Some(frame);
         Ok(())
     }
 }
 
-impl<R: Render> Write for Renderer<'_, R> {
+impl Write for Renderer<'_, '_, '_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut remainder = buf;
         loop {
@@ -395,6 +500,29 @@ impl<R: Render> Write for Renderer<'_, R> {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+#[cfg(feature = "termcolor")]
+impl Renderer<'_, '_, '_> {
+    fn draw_pixel_test(&self, color: iced::Color, newline: bool) {
+        use termcolor::WriteColor;
+
+        let mut out = termcolor::StandardStream::stdout(termcolor::ColorChoice::Always);
+        let [r, g, b, _] = color.into_rgba8();
+        out.set_color(termcolor::ColorSpec::new().set_bg(Some(termcolor::Color::Rgb(r, g, b))))
+            .unwrap();
+
+        if newline {
+            out.write(b"\n").unwrap();
+        }
+        out.write(b" ").unwrap();
+        out.flush().unwrap();
+    }
+}
+
+#[cfg(not(feature = "termcolor"))]
+impl Renderer<'_, '_, '_> {
+    fn draw_pixel_test(&self, _color: iced::Color, _newline: bool) {}
 }
 
 #[cfg(test)]
@@ -444,34 +572,5 @@ mod test {
         assert!(input.is_empty());
         assert_eq!(last_chunk, Some(Chunk::Iend));
         Ok(())
-    }
-
-    mod mock_test {
-        use crate::render::Render;
-        use std::io::Write;
-        use termcolor::*;
-
-        struct MockRender(StandardStream);
-
-        impl Default for MockRender {
-            fn default() -> Self {
-                Self(StandardStream::stdout(ColorChoice::Always))
-            }
-        }
-
-        impl Render for MockRender {
-            fn draw_rectangle(
-                &mut self,
-                _top_left: iced::Point,
-                _size: iced::Size,
-                color: iced::Color,
-            ) {
-                let [red, green, blue, ..] = color.into_rgba8();
-                self.0
-                    .set_color(ColorSpec::new().set_bg(Some(Color::Rgb(red, green, blue))))
-                    .unwrap();
-                write!(self.0, "_").unwrap();
-            }
-        }
     }
 }
