@@ -327,7 +327,7 @@ impl<'frame, 'data, 'state> Renderer<'frame, 'data, 'state> {
         Ok(())
     }
 
-    fn draw_pixel(&self, frame: &mut canvas::Frame, x: usize, y: usize, mut color: iced::Color) {
+    fn draw_pixel(&self, frame: &mut canvas::Frame, x: usize, y: usize, color: iced::Color) {
         // if let Some(gamma) = self.gamma {
         //     color.r = color.r.powf(gamma);
         //     color.g = color.g.powf(gamma);
